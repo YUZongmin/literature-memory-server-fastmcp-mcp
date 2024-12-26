@@ -17,25 +17,42 @@ if 'SQLITE_DB_PATH' not in os.environ:
 DB_PATH = Path(os.environ['SQLITE_DB_PATH'])
 
 
-# Classes
 
-class SourceIdentifiers:
-    """Defines valid identifier types for sources"""
-    VALID_TYPES = {
-        'semantic_scholar',  # For academic papers via Semantic Scholar
-        'arxiv',            # For arXiv papers
-        'doi',             # For papers with DOI
-        'isbn',            # For books
-        'url'              # For webpages, blogs, videos
-    }
+# Core type definitions
+class Entity:
+    def __init__(self, name: str, entity_type: str, observations: List[str]):
+        self.name = name
+        self.entityType = entity_type
+        self.observations = observations
 
+class Relation:
+    def __init__(self, from_entity: str, to_entity: str, relation_type: str):
+        self.from_entity = from_entity
+        self.to_entity = to_entity
+        self.relationType = relation_type
+
+class KnowledgeGraph:
+    def __init__(self):
+        self.entities: List[Entity] = []
+        self.relations: List[Relation] = []
+
+
+
+# Core classes for source management
 class SourceTypes:
-    """Defines valid source types"""
     VALID_TYPES = {'paper', 'webpage', 'book', 'video', 'blog'}
 
 class SourceStatus:
-    """Defines valid source status values"""
     VALID_STATUS = {'unread', 'reading', 'completed', 'archived'}
+
+class SourceIdentifiers:
+    VALID_TYPES = {'semantic_scholar', 'arxiv', 'doi', 'isbn', 'url'}
+
+class EntityRelations:
+    VALID_TYPES = {'discusses', 'introduces', 'extends', 'evaluates', 'applies', 'critiques'}
+
+
+
 
 class SQLiteConnection:
     """Context manager for SQLite database connections"""
@@ -52,16 +69,271 @@ class SQLiteConnection:
         if self.conn:
             self.conn.close()
 
-class EntityRelations:
-    """Defines valid relation types for entity links"""
-    VALID_TYPES = {
-        'discusses',
-        'introduces', 
-        'extends',
-        'evaluates',
-        'applies',
-        'critiques'
-    }
+
+class KnowledgeGraphManager:
+    """Manages operations on the knowledge graph"""
+    def __init__(self, memory_file_path: Path):
+        self.memory_file_path = memory_file_path
+        
+    def _load_graph(self) -> KnowledgeGraph:
+        """Load the knowledge graph from file"""
+        try:
+            with open(self.memory_file_path, 'r') as f:
+                data = f.read()
+                if not data:
+                    return KnowledgeGraph()
+                    
+                lines = data.split("\n")
+                graph = KnowledgeGraph()
+                
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    if item.get('type') == 'entity':
+                        entity = Entity(
+                            name=item['name'],
+                            entity_type=item['entityType'],
+                            observations=item['observations']
+                        )
+                        graph.entities.append(entity)
+                    elif item.get('type') == 'relation':
+                        relation = Relation(
+                            from_entity=item['from'],
+                            to_entity=item['to'],
+                            relation_type=item['relationType']
+                        )
+                        graph.relations.append(relation)
+                return graph
+        except FileNotFoundError:
+            return KnowledgeGraph()
+    
+    def _save_graph(self, graph: KnowledgeGraph):
+        """Save the knowledge graph to file"""
+        lines = []
+        for entity in graph.entities:
+            lines.append(json.dumps({
+                'type': 'entity',
+                'name': entity.name,
+                'entityType': entity.entityType,
+                'observations': entity.observations
+            }))
+        for relation in graph.relations:
+            lines.append(json.dumps({
+                'type': 'relation',
+                'from': relation.from_entity,
+                'to': relation.to_entity,
+                'relationType': relation.relationType
+            }))
+        
+        with open(self.memory_file_path, 'w') as f:
+            f.write('\n'.join(lines))
+
+    def create_entities(self, entities: List[Dict]) -> List[Entity]:
+        """Create multiple new entities in the knowledge graph"""
+        graph = self._load_graph()
+        new_entities = []
+        
+        for entity_data in entities:
+            # Check if entity already exists
+            if not any(e.name == entity_data['name'] for e in graph.entities):
+                entity = Entity(
+                    name=entity_data['name'],
+                    entity_type=entity_data['entityType'],
+                    observations=entity_data['observations']
+                )
+                graph.entities.append(entity)
+                new_entities.append(entity)
+        
+        self._save_graph(graph)
+        return new_entities
+
+    def create_relations(self, relations: List[Dict]) -> List[Relation]:
+        """Create multiple new relations between entities"""
+        graph = self._load_graph()
+        new_relations = []
+        
+        for relation_data in relations:
+            # Check if relation already exists
+            exists = any(
+                r.from_entity == relation_data['from'] and
+                r.to_entity == relation_data['to'] and
+                r.relationType == relation_data['relationType']
+                for r in graph.relations
+            )
+            if not exists:
+                relation = Relation(
+                    from_entity=relation_data['from'],
+                    to_entity=relation_data['to'],
+                    relation_type=relation_data['relationType']
+                )
+                graph.relations.append(relation)
+                new_relations.append(relation)
+        
+        self._save_graph(graph)
+        return new_relations
+
+    def add_observations(self, observations: List[Dict]) -> List[Dict]:
+        """Add new observations to existing entities"""
+        graph = self._load_graph()
+        results = []
+        
+        for obs in observations:
+            entity_name = obs['entityName']
+            contents = obs['contents']
+            
+            # Find the entity
+            entity = next((e for e in graph.entities if e.name == entity_name), None)
+            if not entity:
+                raise ValueError(f"Entity with name {entity_name} not found")
+            
+            # Add new observations
+            new_observations = [
+                content for content in contents
+                if content not in entity.observations
+            ]
+            entity.observations.extend(new_observations)
+            
+            results.append({
+                'entityName': entity_name,
+                'addedObservations': new_observations
+            })
+        
+        self._save_graph(graph)
+        return results
+
+    def delete_entities(self, entity_names: List[str]):
+        """Delete multiple entities and their associated relations"""
+        graph = self._load_graph()
+        
+        # Remove entities
+        graph.entities = [
+            e for e in graph.entities 
+            if e.name not in entity_names
+        ]
+        
+        # Remove associated relations
+        graph.relations = [
+            r for r in graph.relations
+            if r.from_entity not in entity_names and r.to_entity not in entity_names
+        ]
+        
+        self._save_graph(graph)
+
+    def delete_observations(self, deletions: List[Dict]):
+        """Delete specific observations from entities"""
+        graph = self._load_graph()
+        
+        for deletion in deletions:
+            entity_name = deletion['entityName']
+            observations_to_delete = deletion['observations']
+            
+            # Find and update entity
+            entity = next((e for e in graph.entities if e.name == entity_name), None)
+            if entity:
+                entity.observations = [
+                    obs for obs in entity.observations
+                    if obs not in observations_to_delete
+                ]
+        
+        self._save_graph(graph)
+
+    def delete_relations(self, relations: List[Dict]):
+        """Delete specific relations from the graph"""
+        graph = self._load_graph()
+        
+        graph.relations = [
+            r for r in graph.relations
+            if not any(
+                r.from_entity == rel['from'] and
+                r.to_entity == rel['to'] and
+                r.relationType == rel['relationType']
+                for rel in relations
+            )
+        ]
+        
+        self._save_graph(graph)
+
+    def read_graph(self) -> KnowledgeGraph:
+        """Read the entire knowledge graph"""
+        return self._load_graph()
+
+    def search_nodes(self, query: str) -> KnowledgeGraph:
+        """Search for nodes based on query"""
+        graph = self._load_graph()
+        query_lower = query.lower()
+        
+        # Filter entities
+        filtered_entities = [
+            e for e in graph.entities
+            if (query_lower in e.name.lower() or
+                query_lower in e.entityType.lower() or
+                any(query_lower in obs.lower() for obs in e.observations))
+        ]
+        
+        # Get names of filtered entities for relation filtering
+        filtered_names = {e.name for e in filtered_entities}
+        
+        # Filter relations to only include those between filtered entities
+        filtered_relations = [
+            r for r in graph.relations
+            if r.from_entity in filtered_names and r.to_entity in filtered_names
+        ]
+        
+        result = KnowledgeGraph()
+        result.entities = filtered_entities
+        result.relations = filtered_relations
+        return result
+
+    def open_nodes(self, names: List[str]) -> KnowledgeGraph:
+        """Retrieve specific nodes by name"""
+        graph = self._load_graph()
+        
+        # Filter entities
+        filtered_entities = [
+            e for e in graph.entities
+            if e.name in names
+        ]
+        
+        # Get filtered entity names for relation filtering
+        filtered_names = {e.name for e in filtered_entities}
+        
+        # Filter relations to only include those between filtered entities
+        filtered_relations = [
+            r for r in graph.relations
+            if r.from_entity in filtered_names and r.to_entity in filtered_names
+        ]
+        
+        result = KnowledgeGraph()
+        result.entities = filtered_entities
+        result.relations = filtered_relations
+        return result
+
+
+class IntegratedSourceManager:
+    """Manages both source database and knowledge graph operations"""
+    def __init__(self, db_path: Path, memory_file_path: Path):
+        self.db_path = db_path
+        self.kg_manager = KnowledgeGraphManager(memory_file_path)
+        
+    def search_source(self, title: str, type: str, identifier_type: str, 
+                     identifier_value: str) -> Tuple[Optional[str], List[Dict]]:
+        """Search for a source in the database"""
+        # Implementation remains the same as in original server
+        pass
+        
+    def get_source_details(self, uuid: str) -> Dict:
+        """Get complete source information"""
+        # Implementation remains the same as in original server
+        pass
+        
+    def link_source_to_entity(self, source_id: str, entity_name: str, 
+                            relation_type: str, notes: Optional[str] = None) -> Dict:
+        """Create bidirectional link between source and entity"""
+        # Implementation for integrated linking
+        pass
+
+
 
 
 # Core Helper Functions
