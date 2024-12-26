@@ -1,4 +1,4 @@
-# Universal Source Management System
+# IN PROGRESS
 
 A flexible system for managing various types of sources (papers, books, webpages, etc.) and integrating them with knowledge graphs.
 
